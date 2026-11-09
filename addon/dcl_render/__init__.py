@@ -174,6 +174,9 @@ class DCL_Submit(bpy.types.Operator):
             self.report({"ERROR"}, "Select a supported image sequence format (video is pending)")
             return {"CANCELLED"}
         dependencies = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
+        bundled_assets = Path(bpy.utils.system_resource("DATAFILES", path="assets")).resolve()
+        dependencies = [path for path in dependencies
+                        if not Path(path).resolve().is_relative_to(bundled_assets)]
         if dependencies:
             self.report({"ERROR"}, "Pack external resources: " + ", ".join(dependencies[:3]))
             return {"CANCELLED"}
@@ -203,8 +206,7 @@ class DCL_Submit(bpy.types.Operator):
                 job = dict(spec=spec, base=base, status=initial)
                 jobs.insert(0, job)
                 save_jobs(history, jobs)
-                reply = api(base + "/run", key, {"input": spec},
-                            )
+                reply = api(base + "/run", key, {"input": spec, "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
                 job["id"] = reply["id"]
                 save_jobs(history, jobs)
             finally:
@@ -254,7 +256,7 @@ class DCL_Jobs(bpy.types.Operator):
                 if failures:
                     raise RuntimeError(failures[0])
             elif action == "retry":
-                reply = api(job["base"] + "/run", key, {"input": job["spec"]})
+                reply = api(job["base"] + "/run", key, {"input": job["spec"], "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
                 job["id"] = reply["id"]
                 job["status"].update(stage="queued", updated=time.time())
                 save_jobs(path, jobs)
@@ -351,3 +353,4 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
