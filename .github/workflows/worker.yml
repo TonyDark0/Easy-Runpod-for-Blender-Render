@@ -1,0 +1,21 @@
+name: Worker image
+on:
+  workflow_dispatch:
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and publish worker
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/worker:blender-4.5.4"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f worker/Dockerfile -t "$image" .
+          docker run --rm --entrypoint blender "$image" --version
+          docker push "$image"
