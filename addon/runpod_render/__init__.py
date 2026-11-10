@@ -43,7 +43,7 @@ def save_jobs(path, jobs):
 
 def run(operation, finished=None):
     global busy, message
-    busy, message = True, "Workingâ€¦"
+    busy, message = True, "Working..."
     result = []
 
     def work():
@@ -230,7 +230,7 @@ def render_report(job):
         "RunPod Render Report", f"File: {job.get('filename', spec['scene'])}",
         f"Scene: {spec['scene']}", f"Job: {job.get('id', 'Unavailable')}",
         f"Endpoint: {job['base'].rsplit('/', 1)[-1]}",
-        f"Frames: {spec['start']}â€“{spec['end']} (step {spec['step']})",
+        f"Frames: {spec['start']}-{spec['end']} (step {spec['step']})",
         f"Status: {state['stage']}", f"GPU: {state.get('gpu', 'Unavailable')}",
         f"Output: {job.get('output_settings', 'See uploaded scene')}",
         f"Reference rate: USD {REFERENCE_RATE:.2f}/hour",
@@ -299,8 +299,8 @@ class RUNPOD_Submit(bpy.types.Operator):
         bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True)
         filename = Path(bpy.data.filepath).stem
         output_settings = (
-            f"{ENGINES[scene.render.engine]} · {scene.render.resolution_x} × {scene.render.resolution_y} · "
-            f"{scene.render.resolution_percentage}% · {scene.render.image_settings.file_format} · "
+            f"{ENGINES[scene.render.engine]} | {scene.render.resolution_x} x {scene.render.resolution_y} | "
+            f"{scene.render.resolution_percentage}% | {scene.render.image_settings.file_format} | "
             f"{scene.render.fps / scene.render.fps_base:g} fps"
         )
         name = scene.name
@@ -432,14 +432,13 @@ class RUNPOD_PT_Render(bpy.types.Panel):
         connected = credentials_path().exists()
         layout.label(text="Google Drive connected" if connected else "Google Drive not connected",
                      icon="CHECKMARK" if connected else "ERROR")
-        layout.label(text=f"Serverless endpoint: {settings.endpoint or 'Not configured'}")
         engine = ENGINES.get(scene.render.engine, "Unsupported")
         layout.label(text=f"Worker render engine: {engine}")
-        layout.label(text=f"{scene.render.resolution_x} Ã— {scene.render.resolution_y} Â· "
-                          f"{scene.render.resolution_percentage}% Â· "
+        layout.label(text=f"{scene.render.resolution_x} x {scene.render.resolution_y} | "
+                          f"{scene.render.resolution_percentage}% | "
                           f"{scene.render.image_settings.file_format}")
-        layout.label(text=f"Frames {scene.frame_start}â€“{scene.frame_end} Â· "
-                          f"Step {scene.frame_step} Â· FPS {scene.render.fps / scene.render.fps_base:g}")
+        layout.label(text=f"Frames {scene.frame_start}-{scene.frame_end} | "
+                          f"Step {scene.frame_step} | FPS {scene.render.fps / scene.render.fps_base:g}")
         actions = layout.column()
         actions.enabled = connected and bool(settings.endpoint and settings.api_key)
         actions.operator("runpod_render.submit", text="Render current frame",
@@ -454,8 +453,8 @@ class RUNPOD_PT_Render(bpy.types.Panel):
             count = len(range(spec["start"], spec["end"] + 1, spec["step"]))
             stage = state["stage"]
             if stage in {"queued", "preparing", "rendering", "uploading", "saved"} and time.time() - state["updated"] > 180:
-                stage += " Â· no recent update"
-            box.label(text=f"{job.get('filename', spec['scene'])} Â· {stage} Â· {len(state['files'])}/{count}")
+                stage += " | no recent update"
+            box.label(text=f"{job.get('filename', spec['scene'])} | {stage} | {len(state['files'])}/{count}")
             if state["frame"] is not None:
                 box.label(text=f"Frame {state['frame']}")
             box.label(text=time.strftime("Updated %Y-%m-%d %H:%M:%S", time.localtime(state["updated"])))
