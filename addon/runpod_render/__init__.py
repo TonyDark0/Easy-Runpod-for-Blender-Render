@@ -230,7 +230,8 @@ class RUNPOD_Jobs(bpy.types.Operator):
 
     def execute(self, context):
         path = history_path()
-        drive, _ = drive_client()
+        drive, parent = drive_client()
+        rate = prefs().hourly_rate
         action = self.action
         jobs = load_jobs(path)
         job = next((item for item in jobs if item["spec"]["state"] == self.state_id), None)
@@ -257,6 +258,20 @@ class RUNPOD_Jobs(bpy.types.Operator):
                 save_jobs(path, jobs)
                 if failures:
                     raise RuntimeError(failures[0])
+            elif action == "rerender":
+                spec = dict(job["spec"])
+                folder = drive.folder("Benchmark · " + time.strftime("%Y-%m-%d %H-%M-%S"), parent)
+                initial = dict(stage="queued", frame=None, files={}, updated=time.time())
+                with tempfile.TemporaryDirectory() as directory:
+                    status_path = Path(directory) / "status.json"
+                    status_path.write_text(json.dumps(initial), encoding="utf-8")
+                    spec.update(folder=folder, state=drive.upload(status_path, folder))
+                rerun = dict(spec=spec, base=job["base"], status=initial, hourly_rate=rate)
+                jobs.insert(0, rerun)
+                save_jobs(path, jobs)
+                reply = api(job["base"] + "/run", key, {"input": spec})
+                rerun["id"] = reply["id"]
+                save_jobs(path, jobs)
             elif action == "retry":
                 reply = api(job["base"] + "/run", key, {"input": job["spec"], "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
                 job["id"] = reply["id"]
@@ -345,7 +360,9 @@ class RUNPOD_PT_Render(bpy.types.Panel):
                 box.label(text=f"{state.get('failed_stage', '')}: {state['error'][-110:]}")
             row = box.row()
             for action, label in [("open", "Open Drive"), ("download", "Download and view"),
-                                  ("retry", "Retry pending")]:
+                                  ("retry", "Retry pending"), ("rerender", "Render again")]:
+                if action == "rerender" and state["stage"] != "completed":
+                    continue
                 if action == "retry" and state["stage"] != "failed":
                     continue
                 if action == "download" and not state["files"]:
