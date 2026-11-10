@@ -19,6 +19,7 @@ busy = False
 message = ""
 REFERENCE_RATE = 0.75
 TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
+ENGINES = {"CYCLES": "Cycles", "BLENDER_EEVEE": "EEVEE", "BLENDER_EEVEE_NEXT": "EEVEE"}
 images = {"PNG", "OPEN_EXR", "OPEN_EXR_MULTILAYER", "JPEG", "TIFF"}
 
 
@@ -264,8 +265,11 @@ class RUNPOD_Submit(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        if not bpy.data.filepath or scene.render.engine != "CYCLES" or not scene.camera:
-            self.report({"ERROR"}, "Save the scene, select Cycles, and set a camera")
+        if not bpy.data.filepath or not scene.camera:
+            self.report({"ERROR"}, "Save the scene and set a camera")
+            return {"CANCELLED"}
+        if scene.render.engine not in ENGINES:
+            self.report({"ERROR"}, "Select Cycles or EEVEE")
             return {"CANCELLED"}
         if scene.render.image_settings.file_format not in images:
             self.report({"ERROR"}, "Select a supported image sequence format (video is pending)")
@@ -295,7 +299,7 @@ class RUNPOD_Submit(bpy.types.Operator):
         bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True)
         filename = Path(bpy.data.filepath).stem
         output_settings = (
-            f"{scene.render.resolution_x} × {scene.render.resolution_y} · "
+            f"{ENGINES[scene.render.engine]} · {scene.render.resolution_x} × {scene.render.resolution_y} · "
             f"{scene.render.resolution_percentage}% · {scene.render.image_settings.file_format} · "
             f"{scene.render.fps / scene.render.fps_base:g} fps"
         )
@@ -429,7 +433,8 @@ class RUNPOD_PT_Render(bpy.types.Panel):
         layout.label(text="Google Drive connected" if connected else "Google Drive not connected",
                      icon="CHECKMARK" if connected else "ERROR")
         layout.label(text=f"Serverless endpoint: {settings.endpoint or 'Not configured'}")
-        layout.label(text="Worker render engine: Cycles GPU")
+        engine = ENGINES.get(scene.render.engine, "Unsupported")
+        layout.label(text=f"Worker render engine: {engine}")
         layout.label(text=f"{scene.render.resolution_x} Ã— {scene.render.resolution_y} Â· "
                           f"{scene.render.resolution_percentage}% Â· "
                           f"{scene.render.image_settings.file_format}")
