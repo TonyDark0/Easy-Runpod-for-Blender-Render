@@ -4,6 +4,15 @@ import shutil
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+
+class Cancelled(RuntimeError):
+    pass
+
+
+def check_cancel(event):
+    if event is not None and event.is_set():
+        raise Cancelled("Process cancelled. Completed uploads were preserved.")
+
 DRIVE = "https://www.googleapis.com/drive/v3/files"
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
 
@@ -55,7 +64,8 @@ class Drive:
             suffix += 1
         return self.folder(candidate, parent)
 
-    def upload(self, path, parent, name=None):
+    def upload(self, path, parent, name=None, cancel=None):
+        check_cancel(cancel)
         token = self.token()
         size = os.path.getsize(path)
         with request(UPLOAD + "?uploadType=resumable", token, method="POST",
@@ -64,10 +74,26 @@ class Drive:
                      headers={"Content-Type": "application/json",
                               "X-Upload-Content-Length": str(size)}) as response:
             location = response.headers["Location"]
+        from urllib.error import HTTPError
         with open(path, "rb") as source:
-            with request(location, method="PUT", data=source,
-                         headers={"Content-Length": str(size)}) as response:
-                return json.load(response)["id"]
+            offset = 0
+            while offset < size:
+                check_cancel(cancel)
+                chunk = source.read(8 * 1024 * 1024)
+                end = offset + len(chunk) - 1
+                try:
+                    with request(location, method="PUT", data=chunk,
+                                 headers={"Content-Length": str(len(chunk)),
+                                          "Content-Range": f"bytes {offset}-{end}/{size}"}) as response:
+                        return json.load(response)["id"]
+                except HTTPError as error:
+                    if error.code != 308:
+                        raise
+                    confirmed = error.headers.get("Range", "")
+                    if confirmed != f"bytes=0-{end}":
+                        raise RuntimeError("Drive upload did not confirm the expected bytes") from error
+                offset = end + 1
+        raise RuntimeError("Drive did not confirm the completed upload")
 
     def status_file(self, file_id, payload):
         return api(UPLOAD + "/" + file_id + "?uploadType=media",
