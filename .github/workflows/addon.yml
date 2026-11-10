@@ -1,0 +1,21 @@
+name: Add-on checks
+on:
+  push:
+    paths:
+      - "addon/**"
+      - "tests/**"
+      - "tools/build_addon.py"
+      - ".github/workflows/addon.yml"
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check Python and package the development add-on
+        run: |
+          python3 -m compileall -q addon tests tools
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 tools/build_addon.py --output dist
