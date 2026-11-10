@@ -1,3 +1,4 @@
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -258,6 +259,30 @@ def render_report(job):
     return "\n".join(lines) + "\n"
 
 
+def external_dependencies():
+    dependencies = Counter(
+        Path(path).resolve() for path in
+        bpy.utils.blend_paths(absolute=True, packed=False, local=False)
+    )
+    bundled_assets = Path(bpy.utils.system_resource("DATAFILES", path="assets")).resolve()
+    # Appended data retains its source path for reuse. Subtract each reference
+    # individually so a real dependency at the same path can still be detected.
+    ignored = Counter()
+    for datablock in bpy.data.user_map():
+        reference = getattr(datablock, "library_weak_reference", None)
+        if reference and reference.filepath:
+            ignored[Path(bpy.path.abspath(reference.filepath, library=datablock.library)).resolve()] += 1
+    # The worker disables script auto-execution.
+    for text in bpy.data.texts:
+        if text.filepath:
+            ignored[Path(bpy.path.abspath(text.filepath, library=text.library)).resolve()] += 1
+    remaining = set(dependencies - ignored)
+    for library in bpy.data.libraries:
+        if not library.packed_file:
+            remaining.add(Path(bpy.path.abspath(library.filepath, library=library.parent)).resolve())
+    return sorted(str(path) for path in remaining if not path.is_relative_to(bundled_assets))
+
+
 class RUNPOD_Submit(bpy.types.Operator):
     bl_idname = "runpod_render.submit"
     bl_label = "Send render to RunPod"
@@ -274,19 +299,7 @@ class RUNPOD_Submit(bpy.types.Operator):
         if scene.render.image_settings.file_format not in images:
             self.report({"ERROR"}, "Select a supported image sequence format (video is pending)")
             return {"CANCELLED"}
-        dependencies = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
-        bundled_assets = Path(bpy.utils.system_resource("DATAFILES", path="assets")).resolve()
-        # The worker disables script auto-execution. Text Editor source paths
-        # are not needed by the native render.
-        text_paths = {
-            Path(bpy.path.abspath(text.filepath, library=text.library)).resolve()
-            for text in bpy.data.texts if text.filepath
-        }
-        dependencies = [
-            path for path in dependencies
-            if Path(path).resolve() not in text_paths
-            and not Path(path).resolve().is_relative_to(bundled_assets)
-        ]
+        dependencies = external_dependencies()
         if dependencies:
             self.report({"ERROR"}, "Pack external resources: " + ", ".join(dependencies[:3]))
             return {"CANCELLED"}
