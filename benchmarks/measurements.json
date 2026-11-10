@@ -1,0 +1,46 @@
+{
+  "measured_on": "2026-11-09",
+  "published_on": "2026-11-10",
+  "classification": "Development observations, not a controlled GPU benchmark",
+  "local_gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+  "local_vram_gb": 8,
+  "cloud_gpu_model": null,
+  "cloud_gpu_note": "24 GB availability pool; exact GPU was not recorded",
+  "reference_usd_per_hour": 0.75,
+  "billed_cost_verified": false,
+  "runs": [
+    {
+      "scene": "The Junk Shop",
+      "frames": [1],
+      "output": "2000x1000, 100%, TIFF",
+      "local_displayed_seconds": 57.87,
+      "render_and_save_seconds": [50.91487442998914],
+      "worker_seconds": 73.06438973703189,
+      "worker_timer": "handler",
+      "estimated_worker_usd": 0.01522,
+      "evidence": "Local job history timings; maintainer screenshots for output settings and local time"
+    },
+    {
+      "scene": "The Junk Shop",
+      "frames": [1, 2, 3],
+      "output": "2000x1000, 100%, TIFF",
+      "local_displayed_seconds": null,
+      "render_and_save_seconds": [49.51163302897476, 30.81753010302782, 20.418363800039515],
+      "worker_seconds": 132.05859031894943,
+      "worker_timer": "handler",
+      "estimated_worker_usd": 0.02751,
+      "evidence": "Local job history timings; maintainer screenshot for output settings"
+    },
+    {
+      "scene": "Panthera Spelaea (Blender 5.2 splash)",
+      "frames": [0],
+      "output": "1000x500, 100%, PNG",
+      "local_displayed_seconds": 69.6,
+      "render_and_save_seconds": [112.63390663900645],
+      "worker_seconds": 130.813,
+      "worker_timer": "RunPod executionTime",
+      "estimated_worker_usd": 0.02725,
+      "evidence": "Exported report and local job history; maintainer screenshot for local time"
+    }
+  ]
+}
