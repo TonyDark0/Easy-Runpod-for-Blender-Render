@@ -8,12 +8,14 @@ import tempfile
 import threading
 import time
 import webbrowser
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import bpy
 from bpy.props import IntProperty, StringProperty
 
 from .transport import Drive, api
 from .oauth import authorize
+from .cache_paths import cache_properties, point_caches
 
 BASE = "https://api.runpod.ai/v2/"
 busy = False
@@ -244,6 +246,8 @@ def render_report(job):
                       f"Estimated execution cost: USD {elapsed * REFERENCE_RATE / 3600:.5f}"])
     if "scene_download_seconds" in timing:
         lines.append(f"Scene download: {timing['scene_download_seconds']:.2f} s")
+    if "cache_download_and_unpack_seconds" in timing:
+        lines.append(f"Cache download and unpack: {timing['cache_download_and_unpack_seconds']:.2f} s")
     if state.get("error"):
         lines.append(f"Error: {state['error']}")
     for frame, artifact in sorted(state["files"].items(), key=lambda item: int(item[0])):
@@ -283,6 +287,49 @@ def external_dependencies():
     return sorted(str(path) for path in remaining if not path.is_relative_to(bundled_assets))
 
 
+def collect_cache_folders(scene, blend_path):
+    folders = {}
+    remap = {}
+    for owner, prop, library in cache_properties(scene):
+        raw = getattr(owner, prop)
+        if not raw:
+            continue
+        path = Path(bpy.path.abspath(raw, library=library)).resolve()
+        if not path.is_dir():
+            raise ValueError(f"Cache folder not found: {path}")
+        if library or owner.is_property_readonly(prop):
+            raise ValueError(f"Cache path cannot be remapped in linked data: {path}")
+        folders.setdefault(path, f"caches/cache_{len(folders) + 1}")
+        remap[raw] = path
+
+    for cache, library in point_caches(scene):
+        if not cache.use_disk_cache or cache.use_external:
+            continue
+        if library:
+            raise ValueError("Disk caches on linked data must be made local before rendering")
+        name = "blendcache_" + blend_path.stem
+        path = blend_path.with_name(name).resolve()
+        if not path.is_dir():
+            raise ValueError(f"Cache folder not found: {path}")
+        # Blender derives this folder from the saved scene basename.
+        folders[path] = name
+    return folders, {raw: folders[path] for raw, path in remap.items()}
+
+
+def pack_caches(archive, folders):
+    with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=1) as bundle:
+        for directory, name in folders.items():
+            count = 0
+            for source in sorted(directory.rglob("*")):
+                if source.is_symlink():
+                    raise ValueError(f"Cache contains a symbolic link: {source}")
+                if source.is_file():
+                    bundle.write(source, f"{name}/{source.relative_to(directory).as_posix()}")
+                    count += 1
+            if not count:
+                raise ValueError(f"Cache folder is empty: {directory}")
+
+
 class RUNPOD_Submit(bpy.types.Operator):
     bl_idname = "runpod_render.submit"
     bl_label = "Send render to RunPod"
@@ -299,7 +346,13 @@ class RUNPOD_Submit(bpy.types.Operator):
         if scene.render.image_settings.file_format not in images:
             self.report({"ERROR"}, "Select a supported image sequence format (video is pending)")
             return {"CANCELLED"}
-        dependencies = external_dependencies()
+        blend_path = Path(bpy.data.filepath)
+        try:
+            folders, remap = collect_cache_folders(scene, blend_path)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        dependencies = [path for path in external_dependencies() if Path(path) not in folders]
         if dependencies:
             self.report({"ERROR"}, "Pack external resources: " + ", ".join(dependencies[:3]))
             return {"CANCELLED"}
@@ -308,8 +361,8 @@ class RUNPOD_Submit(bpy.types.Operator):
         history = history_path()
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name)
-        blend = root / "scene.blend"
-        bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True)
+        blend = root / blend_path.name
+        bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True, relative_remap=False)
         filename = Path(bpy.data.filepath).stem
         output_settings = (
             f"{ENGINES[scene.render.engine]} | {scene.render.resolution_x} x {scene.render.resolution_y} | "
@@ -324,8 +377,14 @@ class RUNPOD_Submit(bpy.types.Operator):
 
         def submit():
             try:
+                if folders:
+                    archive = root / "render-caches.zip"
+                    pack_caches(archive, folders)
                 folder = drive.unique_folder(filename, parent)
                 spec["source"] = drive.upload(blend, folder)
+                if folders:
+                    spec.update(cache=drive.upload(archive, folder), cache_paths=remap,
+                                source_name=blend.name)
                 queue_job(drive, folder, spec, base, key, history, filename, output_settings)
             finally:
                 temporary.cleanup()

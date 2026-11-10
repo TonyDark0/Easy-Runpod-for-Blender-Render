@@ -1,11 +1,20 @@
+import json
 import sys
 import time
 from pathlib import Path
 
 import bpy
 
-scene_name, frame, output = sys.argv[sys.argv.index("--") + 1:]
+from cache_paths import cache_properties
+
+scene_name, frame, output, *arguments = sys.argv[sys.argv.index("--") + 1:]
 scene = bpy.data.scenes[scene_name]
+if arguments:
+    mapping = json.loads(Path(arguments[0]).read_text(encoding="utf-8"))
+    for owner, prop, _ in cache_properties(scene):
+        raw = getattr(owner, prop)
+        if raw in mapping:
+            setattr(owner, prop, mapping[raw])
 scene.render.use_compositing = False
 scene.render.use_sequencer = False
 if scene.render.engine == "CYCLES":

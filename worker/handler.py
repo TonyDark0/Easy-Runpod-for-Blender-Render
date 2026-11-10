@@ -1,12 +1,25 @@
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 import time
+from zipfile import ZipFile
 
 import runpod
 from transport import Drive
+
+
+def unpack_caches(archive, root, source):
+    with ZipFile(archive) as bundle:
+        for entry in bundle.infolist():
+            parts = entry.filename.split("/")
+            if (len(parts) < 2 or any(part in {"", ".", ".."} for part in parts)
+                    or "\\" in entry.filename or ":" in entry.filename
+                    or parts[0] not in {"caches", "blendcache_" + source.stem}):
+                raise ValueError("Invalid cache archive path")
+        bundle.extractall(root)
 
 
 def handler(job):
@@ -21,7 +34,10 @@ def handler(job):
     drive = Drive(*(os.environ[key] for key in
                     ("DRIVE_CLIENT_ID", "DRIVE_CLIENT_SECRET", "DRIVE_REFRESH_TOKEN")))
     folder, state_id = (spec[key] for key in ("folder", "state"))
-    for identifier in (folder, state_id, spec["source"]):
+    identifiers = [folder, state_id, spec["source"]]
+    if "cache" in spec:
+        identifiers.append(spec["cache"])
+    for identifier in identifiers:
         if not re.fullmatch(r"[\w-]+", identifier, flags=re.ASCII):
             raise ValueError("Invalid Drive identifier")
     state = drive.read_status(state_id)
@@ -38,10 +54,30 @@ def handler(job):
         report("preparing", error="")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "scene.blend"
+            name = spec.get("source_name", "scene.blend")
+            if not name.endswith(".blend") or "/" in name or "\\" in name:
+                raise ValueError("Invalid scene filename")
+            source = root / name
             download_started = time.perf_counter()
             drive.download(spec["source"], source)
             timings['scene_download_seconds'] = time.perf_counter() - download_started
+            cache_args = []
+            if "cache" in spec:
+                cache_started = time.perf_counter()
+                archive = root / "render-caches.zip"
+                drive.download(spec["cache"], archive)
+                unpack_caches(archive, root, source)
+                archive.unlink()
+                mapping = {}
+                for raw, relative in spec.get("cache_paths", {}).items():
+                    target = (root / relative).resolve()
+                    if not target.is_relative_to(root) or not target.is_dir():
+                        raise ValueError("Cache folder missing or outside render directory")
+                    mapping[raw] = str(target)
+                mapping_file = root / "cache-paths.json"
+                mapping_file.write_text(json.dumps(mapping), encoding="utf-8")
+                cache_args = [str(mapping_file)]
+                timings["cache_download_and_unpack_seconds"] = time.perf_counter() - cache_started
             for frame in frames:
                 if str(frame) in saved:
                     continue
@@ -53,7 +89,7 @@ def handler(job):
                     process = subprocess.run(
                         ["blender", "--background", "--factory-startup", "--disable-autoexec",
                          str(source), "--python-exit-code", "1", "--python", "/app/render.py",
-                         "--", spec["scene"], str(frame), str(prefix)],
+                         "--", spec["scene"], str(frame), str(prefix), *cache_args],
                         stdout=stream, stderr=subprocess.STDOUT,
                     )
                 process_seconds = time.perf_counter() - launch_started

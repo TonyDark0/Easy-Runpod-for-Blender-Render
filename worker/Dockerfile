@@ -6,7 +6,7 @@ RUN curl -fsSL "https://download.blender.org/release/Blender${BLENDER_SERIES}/bl
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install runpod==1.7.13
 WORKDIR /app
-COPY addon/runpod_render/transport.py .
+COPY addon/runpod_render/transport.py addon/runpod_render/cache_paths.py ./
 COPY worker/handler.py worker/render.py ./
 CMD ["/opt/venv/bin/python", "handler.py"]
 
