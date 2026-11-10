@@ -1,9 +1,10 @@
 schema_version = "1.0.0"
 id = "runpod_render"
-version = "0.2.0"
+version = "0.2.1"
 name = "Easy RunPod for Blender Render"
 tagline = "Render Cycles and EEVEE scenes on RunPod Serverless"
-maintainer = "RunPod Render contributors"
+maintainer = "TonyDark0 <theborderculture@gmail.com>"
+website = "https://github.com/TonyDark0/Easy-Runpod-for-Blender-Render"
 type = "add-on"
 blender_version_min = "4.5.0"
 license = ["SPDX:GPL-3.0-or-later"]

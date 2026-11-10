@@ -189,6 +189,19 @@ class RUNPOD_Preferences(bpy.types.AddonPreferences):
             layout.label(text=message[:160])
         if busy and operation_cancellable:
             layout.operator("runpod_render.cancel", text="Cancel process", icon="CANCEL")
+        box = layout.box()
+        box.label(text="About and support")
+        row = box.row()
+        row.operator("wm.url_open", text="GitHub and documentation", icon="URL").url = (
+            "https://github.com/TonyDark0/Easy-Runpod-for-Blender-Render")
+        row.operator("wm.url_open", text="Privacy policy").url = (
+            "https://github.com/TonyDark0/Easy-Runpod-for-Blender-Render/blob/main/docs/privacy.md")
+        box.operator("wm.url_open", text="Contact: theborderculture@gmail.com").url = (
+            "mailto:theborderculture@gmail.com")
+        box.operator("wm.url_open", text="Create a RunPod account (affiliate link)").url = (
+            "https://runpod.io?ref=ingivjcz")
+        box.label(text="The maintainer may receive referral compensation to support development.")
+        box.operator("wm.url_open", text="RunPod without referral").url = "https://www.runpod.io/"
 
 
 def credentials_path():
