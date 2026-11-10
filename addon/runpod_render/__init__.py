@@ -24,7 +24,7 @@ def prefs():
 
 
 def history_path():
-    return Path(bpy.utils.user_resource("CONFIG")) / "dcl_render_jobs.json"
+    return Path(bpy.utils.user_resource("CONFIG")) / "runpod_render_jobs.json"
 
 
 def load_jobs(path):
@@ -69,7 +69,7 @@ def run(operation, finished=None):
     bpy.app.timers.register(finish, persistent=True)
 
 
-class DCL_Preferences(bpy.types.AddonPreferences):
+class RUNPOD_Preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
     api_key: StringProperty(name="RunPod API key", subtype="PASSWORD")
     endpoint: StringProperty(name="Endpoint ID")
@@ -79,11 +79,11 @@ class DCL_Preferences(bpy.types.AddonPreferences):
     def draw(self, context):
         for name in ("api_key", "endpoint", "oauth_file", "destination"):
             self.layout.prop(self, name)
-        self.layout.operator("dcl.connect_drive")
+        self.layout.operator("runpod_render.connect_drive")
 
 
 def credentials_path():
-    return Path(bpy.utils.user_resource("CONFIG")) / "dcl_drive_credentials.json"
+    return Path(bpy.utils.user_resource("CONFIG")) / "runpod_drive_credentials.json"
 
 
 def drive_client():
@@ -91,8 +91,8 @@ def drive_client():
     return Drive(data["client_id"], data["client_secret"], data["refresh_token"]), data["folder"]
 
 
-class DCL_Connect(bpy.types.Operator):
-    bl_idname = "dcl.connect_drive"
+class RUNPOD_Connect(bpy.types.Operator):
+    bl_idname = "runpod_render.connect_drive"
     bl_label = "Connect Google Drive"
 
     def execute(self, context):
@@ -102,7 +102,7 @@ class DCL_Connect(bpy.types.Operator):
         def connect():
             data = authorize(path)
             drive = Drive(data["client_id"], data["client_secret"], data["refresh_token"])
-            data["folder"] = drive.folder("DCL Remote Renders", "root")
+            data["folder"] = drive.folder("RunPod Renders", "root")
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(data, stream)
@@ -111,8 +111,8 @@ class DCL_Connect(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class DCL_WorkerSettings(bpy.types.Operator):
-    bl_idname = "dcl.worker_settings"
+class RUNPOD_WorkerSettings(bpy.types.Operator):
+    bl_idname = "runpod_render.worker_settings"
     bl_label = "Copy worker credentials"
 
     def invoke(self, context, event):
@@ -138,8 +138,8 @@ def endpoint_settings():
     return BASE + endpoint, configuration.api_key
 
 
-class DCL_Probe(bpy.types.Operator):
-    bl_idname = "dcl.probe"
+class RUNPOD_Probe(bpy.types.Operator):
+    bl_idname = "runpod_render.probe"
     bl_label = "Test worker (may incur GPU charges)"
 
     def execute(self, context):
@@ -160,8 +160,8 @@ class DCL_Probe(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class DCL_Submit(bpy.types.Operator):
-    bl_idname = "dcl.submit"
+class RUNPOD_Submit(bpy.types.Operator):
+    bl_idname = "runpod_render.submit"
     bl_label = "Send render to RunPod"
     mode: StringProperty()
 
@@ -220,8 +220,8 @@ class DCL_Submit(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class DCL_Jobs(bpy.types.Operator):
-    bl_idname = "dcl.jobs"
+class RUNPOD_Jobs(bpy.types.Operator):
+    bl_idname = "runpod_render.jobs"
     bl_label = "Update jobs"
     action: StringProperty(default="refresh")
     state_id: StringProperty()
@@ -286,8 +286,8 @@ class DCL_Jobs(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class DCL_PT_Render(bpy.types.Panel):
-    bl_label = "DCL Remote Render"
+class RUNPOD_PT_Render(bpy.types.Panel):
+    bl_label = "RunPod Render"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "render"
@@ -300,11 +300,11 @@ class DCL_PT_Render(bpy.types.Panel):
         connection = layout.box()
         for name in ("api_key", "endpoint", "oauth_file", "destination"):
             connection.prop(settings, name)
-        connection.operator("dcl.connect_drive")
+        connection.operator("runpod_render.connect_drive")
         if credentials_path().exists():
             connection.label(text="Google Drive connected")
-            connection.operator("dcl.worker_settings")
-        connection.operator("dcl.probe")
+            connection.operator("runpod_render.worker_settings")
+        connection.operator("runpod_render.probe")
         if probe:
             connection.label(text=probe)
         layout.label(text=f"{scene.render.resolution_x} × {scene.render.resolution_y} · "
@@ -312,9 +312,9 @@ class DCL_PT_Render(bpy.types.Panel):
                           f"{scene.render.image_settings.file_format}")
         layout.label(text=f"Frames {scene.frame_start}–{scene.frame_end} · "
                           f"Step {scene.frame_step} · FPS {scene.render.fps / scene.render.fps_base:g}")
-        layout.operator("dcl.submit", text="Render current frame").mode = "still"
-        layout.operator("dcl.submit", text="Render animation").mode = "animation"
-        layout.operator("dcl.jobs")
+        layout.operator("runpod_render.submit", text="Render current frame").mode = "still"
+        layout.operator("runpod_render.submit", text="Render animation").mode = "animation"
+        layout.operator("runpod_render.jobs")
         if message:
             layout.label(text=message[:160])
         for job in load_jobs(history_path()):
@@ -337,12 +337,12 @@ class DCL_PT_Render(bpy.types.Panel):
                     continue
                 if action == "download" and not state["files"]:
                     continue
-                operation = row.operator("dcl.jobs", text=label)
+                operation = row.operator("runpod_render.jobs", text=label)
                 operation.action, operation.state_id = action, spec["state"]
 
 
-classes = (DCL_Preferences, DCL_Connect, DCL_WorkerSettings, DCL_Probe, DCL_Submit,
-           DCL_Jobs, DCL_PT_Render)
+classes = (RUNPOD_Preferences, RUNPOD_Connect, RUNPOD_WorkerSettings, RUNPOD_Probe, RUNPOD_Submit,
+           RUNPOD_Jobs, RUNPOD_PT_Render)
 
 
 def register():
@@ -353,4 +353,5 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
 

@@ -1,12 +1,13 @@
 schema_version = "1.0.0"
-id = "dcl_render"
+id = "runpod_render"
 version = "0.1.0"
-name = "DCL Remote Render"
+name = "RunPod Render"
 tagline = "Render Cycles scenes on RunPod Serverless"
-maintainer = "DCL Motion Studio"
+maintainer = "RunPod Render contributors"
 type = "add-on"
 blender_version_min = "4.5.0"
 license = ["SPDX:GPL-3.0-or-later"]
 [permissions]
 network = "Connect to RunPod and Google Drive"
 files = "Export scenes and download rendered frames"
+
