@@ -1,13 +1,15 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import webbrowser
 
 import bpy
-from bpy.props import FloatProperty, StringProperty
+from bpy.props import IntProperty, StringProperty
 
 from .transport import Drive, api
 from .oauth import authorize
@@ -15,7 +17,8 @@ from .oauth import authorize
 BASE = "https://api.runpod.ai/v2/"
 busy = False
 message = ""
-probe = ""
+REFERENCE_RATE = 0.75
+TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
 images = {"PNG", "OPEN_EXR", "OPEN_EXR_MULTILAYER", "JPEG", "TIFF"}
 
 
@@ -39,7 +42,7 @@ def save_jobs(path, jobs):
 
 def run(operation, finished=None):
     global busy, message
-    busy, message = True, "Working…"
+    busy, message = True, "Workingâ€¦"
     result = []
 
     def work():
@@ -74,13 +77,18 @@ class RUNPOD_Preferences(bpy.types.AddonPreferences):
     api_key: StringProperty(name="RunPod API key", subtype="PASSWORD")
     endpoint: StringProperty(name="Endpoint ID")
     oauth_file: StringProperty(name="Google desktop OAuth JSON", subtype="FILE_PATH")
-    hourly_rate: FloatProperty(name='Worker rate (USD/hour)', min=0, precision=3)
     destination: StringProperty(name="Download folder", subtype="DIR_PATH")
 
     def draw(self, context):
-        for name in ("api_key", "endpoint", "oauth_file", "destination", "hourly_rate"):
+        for name in ("api_key", "endpoint", "oauth_file", "destination"):
             self.layout.prop(self, name)
-        self.layout.operator("runpod_render.connect_drive")
+        actions = self.layout.column()
+        actions.enabled = not busy
+        actions.operator("runpod_render.connect_drive")
+        if credentials_path().exists():
+            actions.operator("runpod_render.worker_settings")
+        if message:
+            self.layout.label(text=message[:160])
 
 
 def credentials_path():
@@ -139,26 +147,114 @@ def endpoint_settings():
     return BASE + endpoint, configuration.api_key
 
 
-class RUNPOD_Probe(bpy.types.Operator):
-    bl_idname = "runpod_render.probe"
-    bl_label = "Test worker (may incur GPU charges)"
+def queue_job(drive, folder, spec, base, key, history, filename, output_settings):
+    initial = dict(stage="queued", frame=None, files={}, updated=time.time())
+    with tempfile.TemporaryDirectory() as directory:
+        status_path = Path(directory) / "status.json"
+        status_path.write_text(json.dumps(initial), encoding="utf-8")
+        spec = dict(spec, folder=folder, state=drive.upload(status_path, folder))
+    jobs = load_jobs(history)
+    job = dict(spec=spec, base=base, status=initial, filename=filename,
+               output_settings=output_settings)
+    reply = api(base + "/run", key, {
+        "input": spec, "policy": {"executionTimeout": 14400000, "ttl": 86400000},
+    })
+    job["id"] = reply["id"]
+    jobs.insert(0, job)
+    save_jobs(history, jobs)
 
-    def execute(self, context):
-        base, key = endpoint_settings()
 
-        def check():
-            reply = api(base + "/runsync", key, {"input": {"probe": True}})
-            if reply["status"] != "COMPLETED":
-                raise RuntimeError(reply.get("error", reply["status"]))
-            output = reply["output"]
-            return output["blender"] + " · " + output["gpu"]
+def refresh_jobs():
+    if busy or not credentials_path().exists():
+        return 60
+    path = history_path()
+    jobs = load_jobs(path)
+    active = [job for job in jobs if job["status"]["stage"] not in TERMINAL]
+    if not active:
+        return 60
+    drive, _ = drive_client()
+    key = prefs().api_key
 
-        def done(value):
-            global probe
-            probe = value
+    def refresh():
+        for job in active:
+            try:
+                job["status"] = drive.read_status(job["spec"]["state"])
+                job.pop("status_error", None)
+            except OSError as error:
+                job["status_error"] = str(error)
+            if key and job.get("id"):
+                try:
+                    remote = api(job["base"] + "/status/" + job["id"], key)
+                    job["runpod"] = {name: remote[name] for name in
+                                     ("delayTime", "executionTime", "status") if name in remote}
+                    stage = remote.get("status", "")
+                    if stage in {"FAILED", "CANCELLED", "TIMED_OUT"}:
+                        job["status"].update(stage=stage.lower(),
+                                             error=str(remote.get("error", stage)))
+                except OSError:
+                    pass
+        save_jobs(path, jobs)
 
-        run(check, done)
-        return {"FINISHED"}
+    run(refresh)
+    return 60
+
+
+def open_default(path):
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+
+
+def import_compositor(scene, paths):
+    if hasattr(scene, "compositing_node_group"):
+        if scene.compositing_node_group is None:
+            scene.compositing_node_group = bpy.data.node_groups.new("Compositor", "CompositorNodeTree")
+        tree = scene.compositing_node_group
+    else:
+        scene.use_nodes = True
+        tree = scene.node_tree
+    for index, path in enumerate(paths):
+        node = tree.nodes.new("CompositorNodeImage")
+        node.image = bpy.data.images.load(str(path), check_existing=True)
+        node.location = (-320, -index * 300)
+
+
+def render_report(job):
+    spec, state = job["spec"], job["status"]
+    timing = state.get("timings", {})
+    remote = job.get("runpod", {})
+    elapsed = remote.get("executionTime", timing.get("worker_seconds", 0) * 1000) / 1000
+    lines = [
+        "RunPod Render Report", f"File: {job.get('filename', spec['scene'])}",
+        f"Scene: {spec['scene']}", f"Job: {job.get('id', 'Unavailable')}",
+        f"Endpoint: {job['base'].rsplit('/', 1)[-1]}",
+        f"Frames: {spec['start']}â€“{spec['end']} (step {spec['step']})",
+        f"Status: {state['stage']}", f"GPU: {state.get('gpu', 'Unavailable')}",
+        f"Output: {job.get('output_settings', 'See uploaded scene')}",
+        f"Reference rate: USD {REFERENCE_RATE:.2f}/hour",
+        "Billed cost and separate startup/shutdown costs: unavailable",
+    ]
+    if "delayTime" in remote:
+        lines.append(f"Queue: {remote['delayTime'] / 1000:.2f} s")
+    if elapsed:
+        lines.extend([f"Worker execution: {elapsed:.2f} s",
+                      f"Estimated execution cost: USD {elapsed * REFERENCE_RATE / 3600:.5f}"])
+    if "scene_download_seconds" in timing:
+        lines.append(f"Scene download: {timing['scene_download_seconds']:.2f} s")
+    if state.get("error"):
+        lines.append(f"Error: {state['error']}")
+    for frame, artifact in sorted(state["files"].items(), key=lambda item: int(item[0])):
+        parts = [f"Frame {frame}: {artifact['name']}"]
+        for field, label in (("render_and_save_seconds", "render and save"),
+                             ("blender_process_seconds", "Blender process"),
+                             ("upload_seconds", "upload")):
+            if field in artifact:
+                parts.append(f"{label} {artifact[field]:.2f} s")
+        if "render_and_save_seconds" in artifact:
+            parts.append(f"render and save estimate USD {artifact['render_and_save_seconds'] * REFERENCE_RATE / 3600:.5f}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines) + "\n"
 
 
 class RUNPOD_Submit(bpy.types.Operator):
@@ -197,7 +293,12 @@ class RUNPOD_Submit(bpy.types.Operator):
         root = Path(temporary.name)
         blend = root / "scene.blend"
         bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True)
-        hourly_rate = prefs().hourly_rate
+        filename = Path(bpy.data.filepath).stem
+        output_settings = (
+            f"{scene.render.resolution_x} × {scene.render.resolution_y} · "
+            f"{scene.render.resolution_percentage}% · {scene.render.image_settings.file_format} · "
+            f"{scene.render.fps / scene.render.fps_base:g} fps"
+        )
         name = scene.name
         start, end, step = (scene.frame_start, scene.frame_end, scene.frame_step)
         if self.mode == "still":
@@ -206,20 +307,9 @@ class RUNPOD_Submit(bpy.types.Operator):
 
         def submit():
             try:
-                folder = drive.folder(f"{name} · {time.strftime('%Y-%m-%d %H-%M-%S')}", parent)
-                source = drive.upload(blend, folder)
-                status = root / "status.json"
-                initial = dict(stage="queued", frame=None, files={}, updated=time.time())
-                status.write_text(json.dumps(initial), encoding="utf-8")
-                state = drive.upload(status, folder)
-                spec.update(folder=folder, source=source, state=state)
-                jobs = load_jobs(history)
-                job = dict(spec=spec, base=base, status=initial, hourly_rate=hourly_rate)
-                jobs.insert(0, job)
-                save_jobs(history, jobs)
-                reply = api(base + "/run", key, {"input": spec, "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
-                job["id"] = reply["id"]
-                save_jobs(history, jobs)
+                folder = drive.unique_folder(filename, parent)
+                spec["source"] = drive.upload(blend, folder)
+                queue_job(drive, folder, spec, base, key, history, filename, output_settings)
             finally:
                 temporary.cleanup()
 
@@ -233,80 +323,92 @@ class RUNPOD_Submit(bpy.types.Operator):
 
 class RUNPOD_Jobs(bpy.types.Operator):
     bl_idname = "runpod_render.jobs"
-    bl_label = "Update jobs"
-    action: StringProperty(default="refresh")
+    bl_label = "Render job action"
+    action: StringProperty()
     state_id: StringProperty()
+    start: IntProperty(name="Start frame")
+    end: IntProperty(name="End frame")
+    step: IntProperty(name="Frame step", min=1, default=1)
+
+    def invoke(self, context, event):
+        if self.action != "reuse":
+            return self.execute(context)
+        scene = context.scene
+        self.start, self.end, self.step = scene.frame_start, scene.frame_end, scene.frame_step
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        self.layout.label(text="Render from the saved Drive copy")
+        for name in ("start", "end", "step"):
+            self.layout.prop(self, name)
 
     def execute(self, context):
         path = history_path()
-        drive, parent = drive_client()
-        rate = prefs().hourly_rate
-        action = self.action
         jobs = load_jobs(path)
         job = next((item for item in jobs if item["spec"]["state"] == self.state_id), None)
-        key = prefs().api_key
-        destination = prefs().destination
-        if action == "open":
+        if job is None or busy:
+            return {"CANCELLED"}
+        action = self.action
+        if action == "open_drive":
             webbrowser.open("https://drive.google.com/drive/folders/" + job["spec"]["folder"])
             return {"FINISHED"}
-        if action == "download" and not destination:
-            self.report({"ERROR"}, "Choose a download folder")
+        destination = prefs().destination
+        if action in {"open", "compositor", "report"} and not destination:
+            self.report({"ERROR"}, "Set a download folder in the add-on preferences")
+            return {"CANCELLED"}
+        if action == "reuse" and self.end < self.start:
+            self.report({"ERROR"}, "End frame must be at or after start frame")
             return {"CANCELLED"}
         output = Path(bpy.path.abspath(destination)) if destination else None
+        if action == "report":
+            folder = output / job["spec"]["folder"]
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / "render-report.txt"
+            target.write_text(render_report(job), encoding="utf-8")
+            self.report({"INFO"}, f"Report saved to {target}")
+            return {"FINISHED"}
+
+        drive, parent = drive_client()
+        key = prefs().api_key
+        scene = context.scene
+        frame_range = dict(start=self.start, end=self.end, step=self.step)
 
         def perform():
-            if action == "refresh":
-                failures = []
-                for item in jobs:
-                    try:
-                        item["status"] = drive.read_status(item["spec"]["state"])
-                        item.pop("status_error", None)
-                    except Exception as error:
-                        failures.append(str(error))
-                        item["status_error"] = str(error)
-                save_jobs(path, jobs)
-                if failures:
-                    raise RuntimeError(failures[0])
-            elif action == "rerender":
+            if action in {"reuse", "rerender"}:
                 spec = dict(job["spec"])
-                folder = drive.folder("Benchmark · " + time.strftime("%Y-%m-%d %H-%M-%S"), parent)
-                initial = dict(stage="queued", frame=None, files={}, updated=time.time())
-                with tempfile.TemporaryDirectory() as directory:
-                    status_path = Path(directory) / "status.json"
-                    status_path.write_text(json.dumps(initial), encoding="utf-8")
-                    spec.update(folder=folder, state=drive.upload(status_path, folder))
-                rerun = dict(spec=spec, base=job["base"], status=initial, hourly_rate=rate)
-                jobs.insert(0, rerun)
-                save_jobs(path, jobs)
-                reply = api(job["base"] + "/run", key, {"input": spec})
-                rerun["id"] = reply["id"]
-                save_jobs(path, jobs)
-            elif action == "retry":
-                reply = api(job["base"] + "/run", key, {"input": job["spec"], "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
+                if action == "reuse":
+                    spec.update(frame_range)
+                filename = job.get("filename", spec["scene"])
+                folder = drive.unique_folder(filename, parent)
+                queue_job(drive, folder, spec, job["base"], key, path, filename,
+                          job.get("output_settings", "See uploaded scene"))
+                return []
+            if action == "retry":
+                reply = api(job["base"] + "/run", key, {
+                    "input": job["spec"], "policy": {"executionTimeout": 14400000, "ttl": 86400000},
+                })
                 job["id"] = reply["id"]
-                job["status"].update(stage="queued", updated=time.time())
+                job.pop("runpod", None)
+                job["status"].update(stage="queued", updated=time.time(), error="")
                 save_jobs(path, jobs)
-            else:
-                folder = output / job["spec"]["folder"]
-                folder.mkdir(parents=True, exist_ok=True)
-                status = drive.read_status(job["spec"]["state"])
-                first = None
-                for artifact in status["files"].values():
-                    target = folder / Path(artifact["name"]).name
-                    partial = target.with_suffix(target.suffix + ".part")
-                    drive.download(artifact["id"], partial)
-                    partial.replace(target)
-                    first = first or str(target)
-                return first
+                return []
+            folder = output / job["spec"]["folder"]
+            folder.mkdir(parents=True, exist_ok=True)
+            status = drive.read_status(job["spec"]["state"])
+            paths = []
+            for _, artifact in sorted(status["files"].items(), key=lambda item: int(item[0])):
+                target = folder / Path(artifact["name"]).name
+                partial = target.with_suffix(target.suffix + ".part")
+                drive.download(artifact["id"], partial)
+                partial.replace(target)
+                paths.append(target)
+            return paths
 
-        def done(first):
-            if first:
-                image = bpy.data.images.load(first, check_existing=True)
-                bpy.ops.render.view_show()
-                for window in bpy.context.window_manager.windows:
-                    for area in window.screen.areas:
-                        if area.type == "IMAGE_EDITOR":
-                            area.spaces.active.image = image
+        def done(paths):
+            if action == "compositor" and paths:
+                import_compositor(scene, paths)
+            elif action == "open" and paths:
+                open_default(paths[0])
 
         run(perform, done)
         return {"FINISHED"}
@@ -323,24 +425,22 @@ class RUNPOD_PT_Render(bpy.types.Panel):
         settings = prefs()
         scene = context.scene
         layout.enabled = not busy
-        connection = layout.box()
-        for name in ("api_key", "endpoint", "oauth_file", "destination", "hourly_rate"):
-            connection.prop(settings, name)
-        connection.operator("runpod_render.connect_drive")
-        if credentials_path().exists():
-            connection.label(text="Google Drive connected")
-            connection.operator("runpod_render.worker_settings")
-        connection.operator("runpod_render.probe")
-        if probe:
-            connection.label(text=probe)
-        layout.label(text=f"{scene.render.resolution_x} × {scene.render.resolution_y} · "
-                          f"{scene.render.resolution_percentage}% · "
+        connected = credentials_path().exists()
+        layout.label(text="Google Drive connected" if connected else "Google Drive not connected",
+                     icon="CHECKMARK" if connected else "ERROR")
+        layout.label(text=f"Serverless endpoint: {settings.endpoint or 'Not configured'}")
+        layout.label(text="Worker render engine: Cycles GPU")
+        layout.label(text=f"{scene.render.resolution_x} Ã— {scene.render.resolution_y} Â· "
+                          f"{scene.render.resolution_percentage}% Â· "
                           f"{scene.render.image_settings.file_format}")
-        layout.label(text=f"Frames {scene.frame_start}–{scene.frame_end} · "
-                          f"Step {scene.frame_step} · FPS {scene.render.fps / scene.render.fps_base:g}")
-        layout.operator("runpod_render.submit", text="Render current frame").mode = "still"
-        layout.operator("runpod_render.submit", text="Render animation").mode = "animation"
-        layout.operator("runpod_render.jobs")
+        layout.label(text=f"Frames {scene.frame_start}â€“{scene.frame_end} Â· "
+                          f"Step {scene.frame_step} Â· FPS {scene.render.fps / scene.render.fps_base:g}")
+        actions = layout.column()
+        actions.enabled = connected and bool(settings.endpoint and settings.api_key)
+        actions.operator("runpod_render.submit", text="Render current frame",
+                         icon="RENDER_STILL", depress=True).mode = "still"
+        actions.operator("runpod_render.submit", text="Render animation",
+                         icon="RENDER_ANIMATION", depress=True).mode = "animation"
         if message:
             layout.label(text=message[:160])
         for job in load_jobs(history_path()):
@@ -348,49 +448,43 @@ class RUNPOD_PT_Render(bpy.types.Panel):
             box = layout.box()
             count = len(range(spec["start"], spec["end"] + 1, spec["step"]))
             stage = state["stage"]
-            if stage in {"preparing", "rendering", "uploading", "saved"} and time.time() - state["updated"] > 180:
-                stage += " · no recent update"
-            box.label(text=f"{spec['scene']} · {stage} · {len(state['files'])}/{count}")
+            if stage in {"queued", "preparing", "rendering", "uploading", "saved"} and time.time() - state["updated"] > 180:
+                stage += " Â· no recent update"
+            box.label(text=f"{job.get('filename', spec['scene'])} Â· {stage} Â· {len(state['files'])}/{count}")
             if state["frame"] is not None:
                 box.label(text=f"Frame {state['frame']}")
             box.label(text=time.strftime("Updated %Y-%m-%d %H:%M:%S", time.localtime(state["updated"])))
-            timings = state.get('timings', {})
-            elapsed = timings.get('worker_seconds', 0)
-            rate = job.get('hourly_rate', 0)
-            if elapsed:
-                box.label(text=f'Worker execution: {elapsed:.2f} s')
-                if rate:
-                    box.label(text=f'Estimated execution cost: USD {elapsed * rate / 3600:.5f}')
-            measured = [item for item in state['files'].values() if 'render_and_save_seconds' in item]
-            if measured:
-                seconds = sum(item['render_and_save_seconds'] for item in measured)
-                box.label(text=f'Render and save: {seconds:.2f} s total · {seconds / len(measured):.2f} s/frame')
-            if state.get("error"):
-                box.label(text=f"{state.get('failed_stage', '')}: {state['error'][-110:]}")
+            if state.get("error") or job.get("status_error"):
+                box.label(text=str(state.get("error") or job["status_error"])[-110:], icon="ERROR")
             row = box.row()
-            for action, label in [("open", "Open Drive"), ("download", "Download and view"),
-                                  ("retry", "Retry pending"), ("rerender", "Render again")]:
-                if action == "rerender" and state["stage"] != "completed":
-                    continue
-                if action == "retry" and state["stage"] != "failed":
-                    continue
-                if action == "download" and not state["files"]:
-                    continue
+            options = [("open_drive", "Open Drive"), ("report", "Download full report")]
+            if state["files"]:
+                options.extend([("open", "Open"), ("compositor", "Import Compositor")])
+            if state["stage"] in TERMINAL:
+                options.append(("reuse", "Reuse uploaded scene"))
+            if state["stage"] == "completed":
+                options.append(("rerender", "Render again"))
+            if state["stage"] in {"failed", "cancelled", "timed_out"}:
+                options.append(("retry", "Retry pending"))
+            for index, (action, label) in enumerate(options):
+                if index and index % 2 == 0:
+                    row = box.row()
                 operation = row.operator("runpod_render.jobs", text=label)
                 operation.action, operation.state_id = action, spec["state"]
 
 
-classes = (RUNPOD_Preferences, RUNPOD_Connect, RUNPOD_WorkerSettings, RUNPOD_Probe, RUNPOD_Submit,
+classes = (RUNPOD_Preferences, RUNPOD_Connect, RUNPOD_WorkerSettings, RUNPOD_Submit,
            RUNPOD_Jobs, RUNPOD_PT_Render)
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.app.timers.register(refresh_jobs, first_interval=1, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(refresh_jobs):
+        bpy.app.timers.unregister(refresh_jobs)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
-

@@ -37,6 +37,24 @@ class Drive:
         return api(DRIVE, self.token(), dict(name=name, parents=[parent],
                    mimeType="application/vnd.google-apps.folder"))["id"]
 
+    def unique_folder(self, name, parent):
+        token = self.token()
+        query = f"'{parent}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'"
+        params = dict(q=query, fields="nextPageToken,files(name)", pageSize=1000)
+        names = set()
+        while True:
+            page = api(DRIVE + "?" + urlencode(params), token)
+            names.update(folder["name"] for folder in page.get("files", []))
+            if not page.get("nextPageToken"):
+                break
+            params["pageToken"] = page["nextPageToken"]
+        candidate = name
+        suffix = 2
+        while candidate in names:
+            candidate = f"{name} ({suffix})"
+            suffix += 1
+        return self.folder(candidate, parent)
+
     def upload(self, path, parent, name=None):
         token = self.token()
         size = os.path.getsize(path)
