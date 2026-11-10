@@ -5,6 +5,7 @@ from pathlib import Path
 
 import bpy
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cache_paths import cache_properties
 
 scene_name, frame, output, *arguments = sys.argv[sys.argv.index("--") + 1:]
