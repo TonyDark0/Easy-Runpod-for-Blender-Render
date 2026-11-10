@@ -176,8 +176,17 @@ class RUNPOD_Submit(bpy.types.Operator):
             return {"CANCELLED"}
         dependencies = bpy.utils.blend_paths(absolute=True, packed=False, local=False)
         bundled_assets = Path(bpy.utils.system_resource("DATAFILES", path="assets")).resolve()
-        dependencies = [path for path in dependencies
-                        if not Path(path).resolve().is_relative_to(bundled_assets)]
+        # The worker disables script auto-execution. Text Editor source paths
+        # are not needed by the native render.
+        text_paths = {
+            Path(bpy.path.abspath(text.filepath, library=text.library)).resolve()
+            for text in bpy.data.texts if text.filepath
+        }
+        dependencies = [
+            path for path in dependencies
+            if Path(path).resolve() not in text_paths
+            and not Path(path).resolve().is_relative_to(bundled_assets)
+        ]
         if dependencies:
             self.report({"ERROR"}, "Pack external resources: " + ", ".join(dependencies[:3]))
             return {"CANCELLED"}

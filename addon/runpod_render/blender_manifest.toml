@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "runpod_render"
-version = "0.1.1"
+version = "0.1.2"
 name = "RunPod Render"
 tagline = "Render Cycles scenes on RunPod Serverless"
 maintainer = "RunPod Render contributors"
