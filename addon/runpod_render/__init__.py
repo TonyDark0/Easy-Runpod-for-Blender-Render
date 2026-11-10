@@ -280,6 +280,25 @@ def external_dependencies():
     for text in bpy.data.texts:
         if text.filepath:
             ignored[Path(bpy.path.abspath(text.filepath, library=text.library)).resolve()] += 1
+    # Ocean stores a default bake path even when it is simulating live.
+    for obj in bpy.data.objects:
+        for modifier in obj.modifiers:
+            if modifier.type == "OCEAN" and not modifier.is_cached and modifier.filepath:
+                path = bpy.path.abspath(modifier.filepath, library=obj.library)
+                ignored[Path(path).resolve()] += 1
+    # The worker renders images with the video sequencer disabled.
+    sequencer_sounds = Counter()
+    for scene in bpy.data.scenes:
+        editor = scene.sequence_editor
+        if editor:
+            strips = editor.strips_all if hasattr(editor, "strips_all") else editor.sequences_all
+            sequencer_sounds.update(
+                strip.sound for strip in strips if strip.type == "SOUND" and strip.sound
+            )
+    for sound, strip_count in sequencer_sounds.items():
+        if sound.filepath and sound.users == strip_count:
+            path = bpy.path.abspath(sound.filepath, library=sound.library)
+            ignored[Path(path).resolve()] += 1
     remaining = set(dependencies - ignored)
     for library in bpy.data.libraries:
         if not library.packed_file:
