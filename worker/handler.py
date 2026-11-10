@@ -10,6 +10,7 @@ from transport import Drive
 
 
 def handler(job):
+    started = time.perf_counter()
     spec = job["input"]
     if spec.get("probe"):
         version = subprocess.check_output(["blender", "--version"], text=True).splitlines()[0]
@@ -25,6 +26,7 @@ def handler(job):
             raise ValueError("Invalid Drive identifier")
     state = drive.read_status(state_id)
     saved = state.setdefault("files", {})
+    timings = state.setdefault('timings', {})
     frames = range(spec["start"], spec["end"] + 1, spec["step"])
     frame = None
 
@@ -37,13 +39,16 @@ def handler(job):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "scene.blend"
+            download_started = time.perf_counter()
             drive.download(spec["source"], source)
+            timings['scene_download_seconds'] = time.perf_counter() - download_started
             for frame in frames:
                 if str(frame) in saved:
                     continue
                 report("rendering")
                 prefix = root / f"frame_{frame:04d}"
                 log = root / "blender.log"
+                launch_started = time.perf_counter()
                 with log.open("w") as stream:
                     process = subprocess.run(
                         ["blender", "--background", "--factory-startup", "--disable-autoexec",
@@ -51,7 +56,9 @@ def handler(job):
                          "--", spec["scene"], str(frame), str(prefix)],
                         stdout=stream, stderr=subprocess.STDOUT,
                     )
-                files = list(root.glob(prefix.name + ".*"))
+                process_seconds = time.perf_counter() - launch_started
+                timing = prefix.with_suffix('.timing')
+                files = [path for path in root.glob(prefix.name + '.*') if path != timing]
                 if process.returncode or len(files) != 1:
                     with log.open("rb") as stream:
                         stream.seek(max(0, log.stat().st_size - 2500))
@@ -59,10 +66,18 @@ def handler(job):
                     raise RuntimeError(error or "Blender did not produce an output file")
                 report("uploading")
                 image = files[0]
-                saved[str(frame)] = {"id": drive.upload(image, folder), "name": image.name}
+                render_seconds = float(timing.read_text(encoding='ascii'))
+                upload_started = time.perf_counter()
+                artifact_id = drive.upload(image, folder)
+                saved[str(frame)] = dict(
+                    id=artifact_id, name=image.name, render_and_save_seconds=render_seconds,
+                    blender_process_seconds=process_seconds,
+                    upload_seconds=time.perf_counter() - upload_started,
+                )
                 report("saved")
                 image.unlink()
         frame = None
+        timings['worker_seconds'] = time.perf_counter() - started
         report("completed")
     except Exception as error:
         try:

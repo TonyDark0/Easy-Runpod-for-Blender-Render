@@ -7,7 +7,7 @@ import time
 import webbrowser
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import FloatProperty, StringProperty
 
 from .transport import Drive, api
 from .oauth import authorize
@@ -74,10 +74,11 @@ class RUNPOD_Preferences(bpy.types.AddonPreferences):
     api_key: StringProperty(name="RunPod API key", subtype="PASSWORD")
     endpoint: StringProperty(name="Endpoint ID")
     oauth_file: StringProperty(name="Google desktop OAuth JSON", subtype="FILE_PATH")
+    hourly_rate: FloatProperty(name='Worker rate (USD/hour)', min=0, precision=3)
     destination: StringProperty(name="Download folder", subtype="DIR_PATH")
 
     def draw(self, context):
-        for name in ("api_key", "endpoint", "oauth_file", "destination"):
+        for name in ("api_key", "endpoint", "oauth_file", "destination", "hourly_rate"):
             self.layout.prop(self, name)
         self.layout.operator("runpod_render.connect_drive")
 
@@ -187,6 +188,7 @@ class RUNPOD_Submit(bpy.types.Operator):
         root = Path(temporary.name)
         blend = root / "scene.blend"
         bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True)
+        hourly_rate = prefs().hourly_rate
         name = scene.name
         start, end, step = (scene.frame_start, scene.frame_end, scene.frame_step)
         if self.mode == "still":
@@ -203,7 +205,7 @@ class RUNPOD_Submit(bpy.types.Operator):
                 state = drive.upload(status, folder)
                 spec.update(folder=folder, source=source, state=state)
                 jobs = load_jobs(history)
-                job = dict(spec=spec, base=base, status=initial)
+                job = dict(spec=spec, base=base, status=initial, hourly_rate=hourly_rate)
                 jobs.insert(0, job)
                 save_jobs(history, jobs)
                 reply = api(base + "/run", key, {"input": spec, "policy": {"executionTimeout": 14400000, "ttl": 86400000}})
@@ -298,7 +300,7 @@ class RUNPOD_PT_Render(bpy.types.Panel):
         scene = context.scene
         layout.enabled = not busy
         connection = layout.box()
-        for name in ("api_key", "endpoint", "oauth_file", "destination"):
+        for name in ("api_key", "endpoint", "oauth_file", "destination", "hourly_rate"):
             connection.prop(settings, name)
         connection.operator("runpod_render.connect_drive")
         if credentials_path().exists():
@@ -328,6 +330,17 @@ class RUNPOD_PT_Render(bpy.types.Panel):
             if state["frame"] is not None:
                 box.label(text=f"Frame {state['frame']}")
             box.label(text=time.strftime("Updated %Y-%m-%d %H:%M:%S", time.localtime(state["updated"])))
+            timings = state.get('timings', {})
+            elapsed = timings.get('worker_seconds', 0)
+            rate = job.get('hourly_rate', 0)
+            if elapsed:
+                box.label(text=f'Worker execution: {elapsed:.2f} s')
+                if rate:
+                    box.label(text=f'Estimated execution cost: USD {elapsed * rate / 3600:.5f}')
+            measured = [item for item in state['files'].values() if 'render_and_save_seconds' in item]
+            if measured:
+                seconds = sum(item['render_and_save_seconds'] for item in measured)
+                box.label(text=f'Render and save: {seconds:.2f} s total · {seconds / len(measured):.2f} s/frame')
             if state.get("error"):
                 box.label(text=f"{state.get('failed_stage', '')}: {state['error'][-110:]}")
             row = box.row()

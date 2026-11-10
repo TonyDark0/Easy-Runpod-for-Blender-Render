@@ -1,4 +1,6 @@
 import sys
+import time
+from pathlib import Path
 
 import bpy
 
@@ -19,4 +21,6 @@ for device in cycles.devices:
 scene.frame_set(int(frame))
 scene.render.filepath = output
 scene.render.use_file_extension = True
+started = time.perf_counter()
 bpy.ops.render.render(write_still=True, scene=scene.name)
+Path(output + '.timing').write_text(str(time.perf_counter() - started), encoding='ascii')
