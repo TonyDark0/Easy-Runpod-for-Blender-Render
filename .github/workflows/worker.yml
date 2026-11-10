@@ -1,6 +1,12 @@
 name: Worker image
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - "addon/runpod_render/transport.py"
+      - ".github/workflows/worker.yml"
 jobs:
   image:
     runs-on: ubuntu-latest
